@@ -30,7 +30,7 @@ and cached under `/workspace/models`.
 
 ## 2. Add the repo secrets on GitHub
 
-Create the GitHub repo first (web UI, or `gh repo create vdtnico/llamacpp-vast --private --source . --remote origin`),
+Create the GitHub repo first (web UI, or `gh repo create NicoVDT/llamacpp-vast --private --source . --remote origin`),
 then **Settings → Secrets and variables → Actions → New repository secret**:
 
 | Name | Value |
@@ -51,7 +51,7 @@ cd C:\Users\Nico\llamacpp-vast
 git init -b main
 git add .
 git commit -m "llama.cpp CUDA 12.6 sm_86 image for Vast.ai"
-git remote add origin https://github.com/vdtnico/llamacpp-vast.git
+git remote add origin https://github.com/NicoVDT/llamacpp-vast.git
 git push -u origin main
 ```
 
