@@ -59,8 +59,8 @@ git push -u origin main
 GitHub warns that `llamacpp-cu126-sm86.tar.gz` is over 50 MB. That's a warning, not an
 error — the hard limit is 100 MB and the file is 79 MB.
 
-Watch the build under the **Actions** tab. It takes roughly 8–15 minutes, most of it
-pulling the CUDA base image. When it's green:
+Watch the build under the **Actions** tab. It takes about 6 minutes, most of it pulling
+the CUDA base image. When it's green:
 
 ```powershell
 docker manifest inspect nicovdt/llamacpp-vast:latest
@@ -112,7 +112,8 @@ Everything else has a working default baked in and only needs setting to overrid
 (which this one publishes). Off by default because hashing 17 GB costs a few minutes
 on every start, and the download is already length-verified.
 
-**Disk space:** ask for at least **40 GB**. The image is ~20 GB and the model is ~17 GB.
+**Disk space:** ask for at least **40 GB**. The image is 6.2 GB compressed to pull and
+expands considerably on disk; the model is another ~17 GB.
 
 **On-start script** (optional) — starts the server automatically on boot:
 
