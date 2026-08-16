@@ -1,0 +1,11 @@
+# Shell scripts must keep LF endings. A CRLF shebang makes Linux report
+# "bad interpreter: /usr/bin/env bash^M: no such file or directory".
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+
+# Never let the tarball go through line-ending conversion.
+*.gz binary
+*.tar.gz binary
+*.gguf binary

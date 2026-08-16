@@ -1,0 +1,4 @@
+# Models are pulled at run time, never committed.
+*.gguf
+models/
+logs/
