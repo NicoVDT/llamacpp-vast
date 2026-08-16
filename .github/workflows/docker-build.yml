@@ -40,11 +40,27 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Docker Hub repository names are lowercase-only, but a GitHub handle can be
+      # mixed case and people paste that into the secret. Normalise it here so the
+      # casing of a secret can never produce an invalid image reference.
+      - name: Resolve image name
+        id: img
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          ns="$(printf '%s' "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$ns" ]; then
+            echo "DOCKERHUB_USERNAME secret is empty" >&2
+            exit 1
+          fi
+          echo "image=${ns}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "building ${ns}/${IMAGE_NAME}"
+
       - name: Derive image tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.img.outputs.image }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
