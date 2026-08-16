@@ -32,6 +32,15 @@ ENV MODEL_REPO=Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF \
     LLAMA_CACHE_TYPE_V=q8_0 \
     TMUX_SESSION=llama
 
+# Tailscale gives the box a stable tailnet hostname, so the client baseURL stops
+# changing every time Vast assigns a new external port. TS_AUTHKEY is deliberately
+# absent here -- same rule as LLAMA_API_KEY, it comes from the template.
+ENV TS_HOSTNAME=llama-vast \
+    TS_STATE_DIR=/workspace/tailscale \
+    TS_SOCKET=/run/tailscale/tailscaled.sock \
+    TS_SOCKS5_PORT=1055 \
+    TS_EXTRA_ARGS=
+
 # curl/jq drive the Hugging Face download; tmux hosts the detached server session.
 # The base image usually has all three, so this is normally a no-op layer.
 RUN set -eux; \
@@ -46,6 +55,24 @@ RUN set -eux; \
     else \
         echo "curl/jq/tmux/ca-certificates already present"; \
     fi
+
+# Static Tailscale binaries: version-pinned and checksum-verified, rather than
+# piping install.sh into a shell. No apt repo, no systemd, no distro assumptions.
+# Bump TAILSCALE_VERSION and TAILSCALE_SHA256 together -- the sha comes from
+# https://pkgs.tailscale.com/stable/tailscale_<version>_amd64.tgz.sha256
+ARG TAILSCALE_VERSION=1.102.2
+ARG TAILSCALE_SHA256=ad2cde12f8de95f7b93a1e0401e652291c603d42b9d60a33fb1741eb38ab04d8
+RUN set -eux; \
+    url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/tailscale.tgz "$url"; \
+    echo "${TAILSCALE_SHA256}  /tmp/tailscale.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/tailscale.tgz -C /tmp; \
+    mv "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscale"  /usr/local/bin/tailscale; \
+    mv "/tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled" /usr/local/bin/tailscaled; \
+    chmod +x /usr/local/bin/tailscale /usr/local/bin/tailscaled; \
+    rm -rf /tmp/tailscale.tgz "/tmp/tailscale_${TAILSCALE_VERSION}_amd64"; \
+    mkdir -p /var/run/tailscale /run/tailscale; \
+    tailscaled --version
 
 # Unpack the prebuilt binaries. The ~45 test-* executables in the tarball are
 # useless in a server image, so they get dropped (~15 MB).

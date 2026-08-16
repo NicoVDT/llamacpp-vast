@@ -32,6 +32,17 @@ LOG_DIR="${LOG_DIR:-/workspace/logs}"
 LOG_FILE="$LOG_DIR/llama-server.log"
 RUN_DIR="${RUN_DIR:-/run/llama}"
 
+# Tailscale. Without TS_AUTHKEY the whole block is skipped and you fall back to
+# Vast's mapped external port.
+TS_AUTHKEY="${TS_AUTHKEY:-}"
+TS_HOSTNAME="${TS_HOSTNAME:-llama-vast}"
+TS_STATE_DIR="${TS_STATE_DIR:-/workspace/tailscale}"
+TS_SOCKET="${TS_SOCKET:-/run/tailscale/tailscaled.sock}"
+TS_SOCKS5_PORT="${TS_SOCKS5_PORT:-1055}"
+TS_EXTRA_ARGS="${TS_EXTRA_ARGS:-}"
+TS_LOG="$LOG_DIR/tailscaled.log"
+TAILNET_URL=""
+
 MODE="tmux"
 case "${1:-}" in
     --download)   MODE="download" ;;
@@ -65,6 +76,81 @@ if [ -n "${HF_TOKEN:-}" ]; then
     log "using HF_TOKEN for Hugging Face requests"
 fi
 curl_hf() { curl "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" "$@"; }
+
+# --- tailscale -------------------------------------------------------------
+
+# Userspace networking, because Vast containers get no /dev/net/tun and no
+# NET_ADMIN. Inbound tailnet connections are proxied to local listeners, which is
+# all we need -- llama-server binds 0.0.0.0 and so is reachable on the tailnet.
+start_tailscale() {
+    if [ -z "$TS_AUTHKEY" ]; then
+        log "TS_AUTHKEY not set -- skipping Tailscale, reach the server on Vast's mapped port"
+        return 0
+    fi
+    command -v tailscaled >/dev/null 2>&1 || die "tailscaled not installed (rebuild the image)"
+
+    mkdir -p "$TS_STATE_DIR" "$(dirname "$TS_SOCKET")"
+
+    if tailscale --socket="$TS_SOCKET" status >/dev/null 2>&1; then
+        log "tailscaled is already running"
+    else
+        log "starting tailscaled in userspace-networking mode"
+        # nohup: survives the SSH session that launched this script going away.
+        nohup tailscaled \
+            --tun=userspace-networking \
+            --socks5-server="localhost:${TS_SOCKS5_PORT}" \
+            --state="${TS_STATE_DIR}/tailscaled.state" \
+            --socket="$TS_SOCKET" \
+            >>"$TS_LOG" 2>&1 &
+        disown 2>/dev/null || true
+
+        local i
+        for i in $(seq 1 30); do
+            [ -S "$TS_SOCKET" ] && break
+            sleep 1
+        done
+        [ -S "$TS_SOCKET" ] || die "tailscaled never created its socket -- see $TS_LOG"
+    fi
+
+    log "bringing the node up as '${TS_HOSTNAME}'"
+    # shellcheck disable=SC2086
+    tailscale --socket="$TS_SOCKET" up \
+        --authkey="$TS_AUTHKEY" \
+        --hostname="$TS_HOSTNAME" \
+        --accept-dns=false \
+        $TS_EXTRA_ARGS \
+        || die "'tailscale up' failed -- see $TS_LOG.
+       An expired, already-used single-use, or ACL-restricted auth key is the
+       usual cause."
+
+    local ts_json dns_name actual_host ts_ip
+    ts_json="$(tailscale --socket="$TS_SOCKET" status --json 2>/dev/null || true)"
+    dns_name="$(printf '%s' "$ts_json" | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//')"
+    ts_ip="$(tailscale --socket="$TS_SOCKET" ip -4 2>/dev/null | head -n1 || true)"
+
+    if [ -n "$dns_name" ]; then
+        # Tailscale silently appends -1, -2 ... when the name is taken, which is
+        # precisely the churn we are trying to eliminate. Say so loudly.
+        actual_host="${dns_name%%.*}"
+        if [ "$actual_host" != "$TS_HOSTNAME" ]; then
+            log "WARNING: this node registered as '${actual_host}', not '${TS_HOSTNAME}'.
+       A node called '${TS_HOSTNAME}' already exists in the tailnet, so Tailscale
+       suffixed this one -- your baseURL has changed again. Delete the stale node
+       in the admin console, or use an ephemeral auth key so dead instances are
+       removed automatically, then rerun."
+        fi
+        TAILNET_URL="http://${dns_name}:${LLAMA_PORT}"
+        log "tailnet name: ${dns_name}"
+    else
+        log "WARNING: could not read the tailnet DNS name; is MagicDNS enabled?"
+    fi
+    [ -n "$ts_ip" ] && log "tailnet IP:   ${ts_ip} (works even with MagicDNS off)"
+    return 0
+}
+
+# Do this before the model download: a 17 GB pull takes a while, and it is much
+# nicer to already be able to reach the box while it runs.
+start_tailscale
 
 # --- work out which file(s) we need ----------------------------------------
 
@@ -303,6 +389,10 @@ log "waiting for the server to answer on port $LLAMA_PORT ..."
 for i in $(seq 1 180); do
     if curl -fsS -o /dev/null "http://127.0.0.1:${LLAMA_PORT}/health" 2>/dev/null; then
         log "server is up: http://127.0.0.1:${LLAMA_PORT} (alias: $LLAMA_ALIAS)"
+        if [ -n "$TAILNET_URL" ]; then
+            log "reachable on the tailnet at: ${TAILNET_URL}"
+            log "opencode.json baseURL:       ${TAILNET_URL}/v1"
+        fi
         exit 0
     fi
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
