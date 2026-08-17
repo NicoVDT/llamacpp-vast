@@ -416,7 +416,20 @@ fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux not installed"
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    die "tmux session '$TMUX_SESSION' already exists.
+    # Already running and healthy is a success, not a failure. This script is meant
+    # to be usable as an on-start hook, which may run again on an instance restart,
+    # and erroring out on a working server would report a false failure.
+    if curl -fsS -o /dev/null "http://127.0.0.1:${LLAMA_PORT}/health" 2>/dev/null; then
+        log "server is already running and healthy in tmux session '$TMUX_SESSION'"
+        log "  attach: tmux attach -t $TMUX_SESSION"
+        if [ -n "$TAILNET_URL" ]; then
+            log "  opencode.json baseURL: ${TAILNET_URL}/v1"
+        fi
+        exit 0
+    fi
+    die "tmux session '$TMUX_SESSION' exists but the server is not answering on
+       port ${LLAMA_PORT}. It is probably still loading the model, or it crashed.
+       Check:   tail -f $LOG_FILE
        Attach:  tmux attach -t $TMUX_SESSION
        Replace: tmux kill-session -t $TMUX_SESSION && start-llama.sh"
 fi
