@@ -54,6 +54,20 @@ esac
 log()  { echo "[start-llama] $*"; }
 die()  { echo "[start-llama] ERROR: $*" >&2; exit 1; }
 
+# Do not trust the inherited environment. Docker ENV does not reach SSH login
+# shells, so this script has to work when invoked from a bare environment with
+# neither PATH nor LD_LIBRARY_PATH pointing at the binaries.
+LLAMA_HOME="${LLAMA_HOME:-/opt/llamacpp}"
+case ":$PATH:" in
+    *":$LLAMA_HOME/bin:"*) ;;
+    *) PATH="$LLAMA_HOME/bin:$PATH" ;;
+esac
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":$LLAMA_HOME/bin:"*) ;;
+    *) LD_LIBRARY_PATH="$LLAMA_HOME/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+esac
+export PATH LD_LIBRARY_PATH
+
 # --- preflight -------------------------------------------------------------
 
 if [ "$MODE" != "download" ] && [ -z "${LLAMA_API_KEY:-}" ]; then

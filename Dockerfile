@@ -123,6 +123,30 @@ RUN set -eu; \
     fi; \
     echo "linkage OK (libcuda.so.1 is provided by the host driver at run time)"
 
+# Docker ENV does not reach SSH login shells: sshd builds a fresh environment from
+# /etc/profile rather than inheriting the image's, so PATH and LD_LIBRARY_PATH set
+# above are invisible once you ssh in. Access to these boxes is over SSH, so the
+# paths have to live somewhere a login shell actually reads. Both files, because
+# Vast's session setup does not consistently use a login shell.
+RUN set -eux; \
+    printf '%s\n' \
+        'export PATH=/opt/llamacpp/bin:/usr/local/bin:$PATH' \
+        'export LD_LIBRARY_PATH=/opt/llamacpp/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
+        > /etc/profile.d/llamacpp.sh; \
+    chmod 644 /etc/profile.d/llamacpp.sh; \
+    printf '\n# llama.cpp paths (see /etc/profile.d/llamacpp.sh)\n%s\n%s\n' \
+        'export PATH=/opt/llamacpp/bin:/usr/local/bin:$PATH' \
+        'export LD_LIBRARY_PATH=/opt/llamacpp/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
+        >> /root/.bashrc
+
+# The benchmark binaries are needed for the base vs abliterated comparison, and the
+# test-* cull is the kind of thing that quietly takes more than intended. Assert.
+RUN set -eux; \
+    for b in llama-server llama-cli llama-bench llama-perplexity llama-quantize; do \
+        test -x "/opt/llamacpp/bin/$b" || { echo "MISSING: $b" >&2; exit 1; }; \
+    done; \
+    echo "all required binaries present"
+
 COPY start-llama.sh /usr/local/bin/start-llama.sh
 # Strip CRLF in case the file was checked out on Windows without .gitattributes
 # taking effect -- a \r after the shebang makes the container report "not found".
