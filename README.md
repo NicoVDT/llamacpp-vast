@@ -1,76 +1,73 @@
-﻿# llamacpp-vast
+# llamacpp-vast
 
-Prebuilt llama.cpp (CUDA 12.6, `sm_86`) baked into Vast.ai's base image, so renting
-a fresh RTX 3090 box means pulling an image instead of recompiling.
+Prebuilt llama.cpp (CUDA 12.6, `sm_86`) on top of Vast.ai's base image, so renting a
+fresh RTX 3090 means pulling an image instead of a 25 minute recompile.
 
-The ~17 GB GGUF is **not** in the image — it's pulled from Hugging Face on first run
-and cached under `/workspace/models`.
+The ~17 GB GGUF is not in the image. It is pulled from Hugging Face on first run and
+cached under `/workspace/models`.
 
 | | |
 |---|---|
-| Image | `nicovdt/llamacpp-vast:latest` |
-| Base | `vastai/base-image:cuda-12.6.3-auto` (SSH, Jupyter and the portal keep working) |
-| Binaries | `/opt/llamacpp/bin` — on `PATH` and `LD_LIBRARY_PATH` |
+| Image | `nicovdt/llamacpp-vast:latest` (6.2 GB compressed) |
+| Base | `vastai/base-image:cuda-12.6.3-auto`, so SSH, Jupyter and the portal keep working |
+| Binaries | `/opt/llamacpp/bin`, on `PATH` and `LD_LIBRARY_PATH` |
+| Launcher | `start-llama.sh`, installed to `/usr/local/bin` and on `PATH` |
 | Model cache | `/workspace/models` (override with `MODEL_DIR`) |
-| Server logs | `/workspace/logs/llama-server.log` |
+| Logs | `/workspace/logs/llama-server.log`, `/workspace/logs/tailscaled.log` |
 | Port | `10200` |
-| Tailnet | `llama-vast` via Tailscale in userspace mode — a fixed baseURL across rentals |
+| Tailnet | `llama-vast` via Tailscale userspace mode, giving a fixed baseURL across rentals |
 
 ---
 
 ## 1. Create a Docker Hub access token
 
 1. Sign in at [hub.docker.com](https://hub.docker.com).
-2. If you don't already have one, create the repository: **Repositories → Create repository**,
-   name `llamacpp-vast`, visibility **Public** (private works too, but then Vast needs
-   Docker credentials on the template — public is simpler).
-3. Go to **Account Settings → Personal access tokens → Generate new token**.
+2. **Account Settings → Personal access tokens → Generate new token**.
    - Description: `github-actions-llamacpp-vast`
-   - Permissions: **Read & Write** (Read-only cannot push)
-4. Copy the token now — Docker Hub shows it exactly once.
+   - Permissions: **Read & Write**. Read-only cannot push.
+3. Copy it immediately. Docker Hub shows it once.
+
+You do not need to create the repository by hand. The first push creates
+`nicovdt/llamacpp-vast` automatically, public by default.
 
 ## 2. Add the repo secrets on GitHub
 
-Create the GitHub repo first (web UI, or `gh repo create NicoVDT/llamacpp-vast --private --source . --remote origin`),
-then **Settings → Secrets and variables → Actions → New repository secret**:
+**Settings → Secrets and variables → Actions → New repository secret**:
 
 | Name | Value |
 |---|---|
-| `DOCKERHUB_USERNAME` | your Docker Hub username, e.g. `nicovdt` |
+| `DOCKERHUB_USERNAME` | `nicovdt`, lowercase |
 | `DOCKERHUB_TOKEN` | the token from step 1 |
 
-The workflow builds `${DOCKERHUB_USERNAME}/llamacpp-vast`, so the username secret
-also determines the namespace.
+`DOCKERHUB_USERNAME` must be lowercase. Docker Hub rejects a mixed-case username at
+`docker login`, which fails the build at step 5 before it reaches the build itself.
+The GitHub account is `NicoVDT` and the Docker Hub account is `nicovdt`, so this is
+easy to get wrong. The workflow lowercases the value when constructing the image name
+as a second line of defence, but the login step uses the secret as given.
 
-## 3. Push the repo (Windows / PowerShell)
+Rotating the token: generate the new one, update the secret, then delete the old one.
+Deleting first breaks the next build with an auth error that looks unrelated.
 
-The 79 MB tarball is committed, so this first push is the one slow part — after that
-Actions does all the heavy lifting and nothing large leaves your machine again.
+## 3. Push (Windows, PowerShell)
 
 ```powershell
 cd C:\Users\Nico\llamacpp-vast
-git init -b main
-git add .
-git commit -m "llama.cpp CUDA 12.6 sm_86 image for Vast.ai"
-git remote add origin https://github.com/NicoVDT/llamacpp-vast.git
-git push -u origin main
+git push origin main
 ```
 
-GitHub warns that `llamacpp-cu126-sm86.tar.gz` is over 50 MB. That's a warning, not an
-error — the hard limit is 100 MB and the file is 79 MB.
+GitHub warns that `llamacpp-cu126-sm86.tar.gz` is over 50 MB. That is a warning. The
+hard limit is 100 MB and the file is 79 MB.
 
-Watch the build under the **Actions** tab. It takes about 6 minutes, most of it pulling
-the CUDA base image. When it's green:
+The build takes about 6 minutes, mostly pulling the CUDA base image. README-only
+commits do not trigger it (`paths-ignore`). When it is green:
 
 ```powershell
 docker manifest inspect nicovdt/llamacpp-vast:latest
 ```
 
-Rebuild later by pushing any change, or from **Actions → Build and push image → Run workflow**.
+Rebuild by pushing, or from **Actions → Build and push image → Run workflow**.
 
 ## 4. Vast.ai template
-
-**Templates → Create/Edit template.**
 
 **Image path/tag**
 
@@ -78,120 +75,115 @@ Rebuild later by pushing any change, or from **Actions → Build and push image 
 nicovdt/llamacpp-vast:latest
 ```
 
-**Docker options** — this is where the port mapping goes:
+**Docker options**
 
 ```
 -p 10200:10200 -p 22:22 -p 8080:8080 -p 8384:8384 -p 72299:72299
 ```
 
-Keep whatever ports the stock Vast template already had (SSH, portal, Jupyter) and
-just add `-p 10200:10200`.
+Keep whatever ports the stock template had and add `-p 10200:10200`. With Tailscale
+working you do not strictly need that mapping, since the tailnet reaches the server
+without one. Keep it as a way back in when an auth key has expired.
 
-With Tailscale configured you don't strictly need `-p 10200:10200` any more — the
-tailnet reaches the server without an inbound port mapping, which is the whole point.
-Keep it anyway as a fallback for when an auth key has expired and you need a way in.
+Port 10200 was chosen because the base image already uses others: Jupyter holds 8080,
+Caddy holds 6006, 1111 and 8384.
 
 **Environment variables**
 
 | Variable | Value | Notes |
 |---|---|---|
-| `LLAMA_API_KEY` | *your key* | **Required.** The server refuses to start without it. Never in the image. |
-| `TS_AUTHKEY` | `tskey-auth-…` | Enables Tailscale. Use a **reusable, ephemeral** key — see section 6. |
-| `TS_HOSTNAME` | `llama-vast` | Tailnet name. Default is already `llama-vast`; set it only to change it. |
-| `OPEN_BUTTON_PORT` | `10200` | Optional — makes Vast's "Open" button hit the server. |
-| `HF_TOKEN` | *your HF token* | Optional — only for gated repos or rate limits. |
+| `LLAMA_API_KEY` | your key | Required. The script refuses to start without it. Never baked into the image. |
+| `TS_AUTHKEY` | `tskey-auth-...` | Enables Tailscale. Reusable and ephemeral, see section 6. |
+| `TS_HOSTNAME` | `llama-vast` | Already the default. Set only to change it. |
+| `OPEN_BUTTON_PORT` | `10200` | Optional, points Vast's "Open" button at the server. |
+| `HF_TOKEN` | your HF token | Optional, for gated repos or rate limits. |
 
-Everything else has a working default baked in and only needs setting to override:
-`MODEL_REPO`, `MODEL_QUANT`, `MODEL_FILE`, `MODEL_PATH`, `MODEL_DIR`, `MODEL_REVISION`,
-`LLAMA_PORT`, `LLAMA_CTX`, `LLAMA_NGL`, `LLAMA_PARALLEL`, `LLAMA_ALIAS`,
-`LLAMA_CACHE_TYPE_K`, `LLAMA_CACHE_TYPE_V`, `LLAMA_EXTRA_ARGS`, `TMUX_SESSION`,
-`LOG_DIR`, `HF_ENDPOINT`, `VERIFY_SHA256`, `TS_STATE_DIR`, `TS_SOCKET`,
-`TS_SOCKS5_PORT`, `TS_EXTRA_ARGS`.
+Overridable, all with working defaults: `MODEL_REPO`, `MODEL_QUANT`, `MODEL_FILE`,
+`MODEL_PATH`, `MODEL_DIR`, `MODEL_REVISION`, `LLAMA_PORT`, `LLAMA_CTX`, `LLAMA_NGL`,
+`LLAMA_PARALLEL`, `LLAMA_ALIAS`, `LLAMA_CACHE_TYPE_K`, `LLAMA_CACHE_TYPE_V`,
+`LLAMA_EXTRA_ARGS`, `TMUX_SESSION`, `LOG_DIR`, `HF_ENDPOINT`, `VERIFY_SHA256`,
+`TS_STATE_DIR`, `TS_SOCKET`, `TS_SOCKS5_PORT`, `TS_EXTRA_ARGS`.
 
-`VERIFY_SHA256=1` checks the downloaded file against the repo's `SHA256SUMS.txt`
-(which this one publishes). Off by default because hashing 17 GB costs a few minutes
-on every start, and the download is already length-verified.
+**Disk:** at least 40 GB. Image 6.2 GB compressed and larger unpacked, model ~17 GB.
 
-**Disk space:** ask for at least **40 GB**. The image is 6.2 GB compressed to pull and
-expands considerably on disk; the model is another ~17 GB.
+**Reliability:** filter to 96% or above.
 
-**On-start script** (optional) — starts the server automatically on boot:
+**On-start script** (optional):
 
 ```
 start-llama.sh
 ```
 
-Leave it empty if you'd rather start it by hand, which is easier to debug the first time.
+Leave it empty the first time, since running it by hand is easier to debug.
 
-## 5. Start the server on a fresh instance
+Destroy instances, do not stop them. A stopped instance keeps billing for its disk.
 
-SSH in using the command Vast shows on the instance card, then:
+## 5. Start the server
+
+SSH in, then:
 
 ```bash
 start-llama.sh
 ```
+
+It is at `/usr/local/bin/start-llama.sh` and on `PATH`, so the bare name works. There
+is no `/opt/start-llama.sh`.
 
 That will:
 
-0. Bring the node up on your tailnet as `llama-vast`, if `TS_AUTHKEY` is set. This runs
-   *before* the download on purpose, so the box is reachable while 17 GB pulls.
-1. Look up the `Q4_K_M` GGUF in `Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF` via the
-   Hugging Face API (handles multi-part shards; resumes a partial download; skips the
-   download entirely if the file is already complete). Against the repo as it stands
-   today that resolves to a single file, `Qwen3.8-27B-ABLITERATED-Q4_K_M.gguf`,
-   16,810,716,384 bytes (15.7 GiB) — verified, not assumed.
+0. Bring the node up on the tailnet as `llama-vast`, if `TS_AUTHKEY` is set. This runs
+   before the download on purpose, so the box is reachable while 17 GB pulls.
+1. Resolve the `Q4_K_M` GGUF in `Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF` through
+   the Hugging Face API. Handles sharded files, resumes partial downloads, skips the
+   download when the file is already complete. Today that resolves to a single file,
+   `Qwen3.8-27B-ABLITERATED-Q4_K_M.gguf`, 16,810,716,384 bytes.
 2. Launch `llama-server` in a detached tmux session named `llama`.
-3. Wait until `/health` answers, then print the local URL, the tailnet URL and the
-   exact `opencode.json` baseURL.
+3. Wait for `/health`, then print the local URL, the tailnet URL and the exact
+   `opencode.json` baseURL.
 
-First run downloads ~17 GB. Later runs on the same instance start in under a minute.
-
-Useful follow-ups:
+Options:
 
 ```bash
-tmux attach -t llama          # watch the server (detach: Ctrl-b then d)
+start-llama.sh --download     # fetch the model, do not start the server
+start-llama.sh --foreground   # run in the foreground instead of tmux
+```
+
+Day to day:
+
+```bash
+tmux attach -t llama          # watch it, detach with Ctrl-b then d
 tail -f /workspace/logs/llama-server.log
 tmux kill-session -t llama    # stop it
-start-llama.sh --download     # fetch the model only, don't start
-start-llama.sh --foreground   # run in the foreground instead of tmux
 nvidia-smi                    # confirm the 3090 and VRAM use
 ```
 
-**Test it** — from the instance:
+Check it from the instance:
 
 ```bash
 curl -s http://127.0.0.1:10200/v1/models -H "Authorization: Bearer $LLAMA_API_KEY"
 ```
 
-From your Windows machine, using the **external** host and port Vast maps to `10200`
-(shown on the instance card as something like `ssh5.vast.ai:41xxx`):
+From Windows, use `curl.exe`. Bare `curl` in PowerShell is an alias for
+`Invoke-WebRequest` and takes different arguments.
 
-```powershell
-curl.exe -s http://ssh5.vast.ai:41234/v1/chat/completions -H "Content-Type: application/json" -H "Authorization: Bearer YOUR_KEY" -d "{\"model\":\"qwen-local\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-```
+## 6. Tailscale, for a stable baseURL
 
-Use `curl.exe`, not `curl` — bare `curl` in PowerShell is an alias for
-`Invoke-WebRequest`, which takes different arguments.
+Vast assigns the external port at rent time, so `ssh5.vast.ai:47237` becomes something
+else on the next box and the client config goes stale every session. A tailnet name
+does not move.
 
-## 6. Tailscale — a stable baseURL
+Create the key at [admin console → Keys](https://login.tailscale.com/admin/settings/keys):
 
-Vast assigns the external port at rent time, so `ssh5.vast.ai:41237` becomes something
-else on the next box and your client config goes stale every session. A tailnet name
-doesn't move.
-
-**Create the auth key** — [admin console](https://login.tailscale.com/admin/settings/keys)
-→ **Settings → Keys → Generate auth key**:
-
-| Option | Set it to | Why |
+| Option | Set to | Why |
 |---|---|---|
-| **Reusable** | **on** | One key works for every box you rent. A single-use key authenticates once and then silently fails on the next instance. |
-| **Ephemeral** | **on** | **This is the one that keeps your hostname stable.** Ephemeral nodes are removed from the tailnet shortly after they go offline, so a destroyed instance frees the name `llama-vast`. |
-| **Expiry** | up to 90 days | Tailscale's maximum. Diarise it: an expired key fails at `tailscale up` with a message that reads like a network fault. |
+| **Reusable** | on | One key covers every box. A single-use key authenticates once and then fails silently on the next instance. |
+| **Ephemeral** | on | This is what keeps the hostname stable. Ephemeral nodes are removed shortly after going offline, so a destroyed instance frees the name `llama-vast`. |
+| **Expiry** | set a date | Do not choose never. 90 days is the maximum. An expired key fails at `tailscale up` with a message that reads like a network fault. |
 
-Paste it into `TS_AUTHKEY` on the Vast template. **MagicDNS** must be enabled on the
-tailnet for the name to resolve (Tailscale enables it by default).
+Paste it into `TS_AUTHKEY`. MagicDNS must be on for the name to resolve, which is the
+Tailscale default.
 
-**The URL.** `start-llama.sh` prints it once the server answers:
+`start-llama.sh` prints the address once the server answers:
 
 ```
 [start-llama] tailnet name: llama-vast.tailnet-name.ts.net
@@ -199,44 +191,38 @@ tailnet for the name to resolve (Tailscale enables it by default).
 [start-llama] opencode.json baseURL:       http://llama-vast.tailnet-name.ts.net:10200/v1
 ```
 
-Substitute that `baseURL` into `opencode.json` once and it stays correct across
-rentals. The tailnet IP (`100.x.y.z`) is printed too and works even with MagicDNS off.
+The tailnet IP (`100.x.y.z`) is printed too and works with MagicDNS off.
 
-Traffic over the tailnet is WireGuard-encrypted, but `LLAMA_API_KEY` still applies —
-Tailscale controls *who can reach* the port, the API key controls who can use it.
+Traffic over the tailnet is WireGuard encrypted, but `LLAMA_API_KEY` still applies.
+Tailscale controls who can reach the port, the API key controls who can use it.
 
 ### The one way this still breaks
 
 Tailscale appends a numeric suffix when a name is taken. Rent a new box while the old
-`llama-vast` node still exists and this one registers as `llama-vast-1` — your baseURL
-has moved again, which is exactly what you were trying to stop.
+`llama-vast` node still exists and this one becomes `llama-vast-1`, moving the baseURL
+again, which is the churn this was meant to remove.
 
-`start-llama.sh` checks the name it actually got and warns loudly if it was suffixed,
-so you find out from the startup log rather than from a connection error hours later.
-Two things prevent it: use an **ephemeral** key, and **destroy the old instance** before
-starting a new one rather than leaving it running.
-
-If it happens anyway, delete the stale node in the admin console and rerun the script.
+`start-llama.sh` reads back the name it actually got and warns loudly when it has been
+suffixed, so this shows up in the startup log rather than as a connection error hours
+later. Prevent it by using an ephemeral key and destroying old instances. If it happens
+anyway, delete the stale node in the admin console and rerun.
 
 ### Debugging
 
 ```bash
 tailscale status                       # peers and this node's name
 tailscale ip -4                        # 100.x.y.z address
-tail -f /workspace/logs/tailscaled.log # daemon log
+tail -f /workspace/logs/tailscaled.log
 ```
 
 `tailscaled` runs with `--tun=userspace-networking` because Vast containers have no
-`/dev/net/tun` and no `NET_ADMIN`. In that mode inbound tailnet connections are proxied
-to local listeners, which is all this needs — `llama-server` binds `0.0.0.0`, so the
-tailnet reaches it. A SOCKS5 proxy is also exposed on `localhost:1055` if you ever want
-to reach *other* tailnet nodes from inside the container.
+`/dev/net/tun` and no `NET_ADMIN`. Inbound tailnet connections are proxied to local
+listeners, which is all this needs, since `llama-server` binds `0.0.0.0`. A SOCKS5
+proxy sits on `localhost:1055` for reaching other tailnet nodes from inside.
 
 ---
 
-## Server command
-
-`start-llama.sh` runs exactly this:
+## Server command and why each flag is there
 
 ```
 llama-server -m <model.gguf> --host 0.0.0.0 --port 10200 -ngl 99 \
@@ -244,38 +230,139 @@ llama-server -m <model.gguf> --host 0.0.0.0 --port 10200 -ngl 99 \
   --parallel 1 --alias qwen-local --api-key <LLAMA_API_KEY>
 ```
 
-## What's in the image
+**`--flash-attn on`** takes a value now, not a bare flag. Flash attention must be on
+for the q8_0 KV cache to work. Without it the KV cache falls back to F16 and doubles
+in size.
 
-The tarball has one top-level `bin/` directory holding executables **and** shared
-objects together — there is no separate `lib/` — so both `PATH` and `LD_LIBRARY_PATH`
-point at `/opt/llamacpp/bin`. `llama-server` is at `/opt/llamacpp/bin/llama-server`.
+**`--parallel 1`** matters more than it looks. The default is 4 slots sharing one
+context pool. A single 29k token agentic turn starves the others and triggers KV cache
+retry cascades (`failed to find a memory slot`). One slot gets the whole context.
+
+**`-c 131072`** fits. Measured at roughly 20.7 GB of 24.5 GB with q8_0 KV, on a real
+3090, not calculated. KV costs about 39 MB per 1k tokens.
+
+**`--alias qwen-local`** gives a clean model id instead of the full file path.
+
+### Measured performance
+
+| | |
+|---|---|
+| Generation, fresh context | ~41 tok/s |
+| Generation at 84k context | ~28 tok/s |
+| Prompt processing | ~1100 to 1360 tok/s |
+
+Generation slows as context fills. That is expected.
+
+### If it runs out of VRAM
+
+Do not reflexively drop `LLAMA_CTX` to 65536. 131072 is verified to fit. An OOM means
+something differs from the known-good manual build, so find that first. Check that
+flash attention actually enabled (without it the KV cache is F16 and roughly doubles),
+that both `--cache-type-k` and `--cache-type-v` are `q8_0`, and that nothing else is
+holding VRAM (`nvidia-smi`).
+
+## Client setup
+
+opencode talks to llama-server directly, with no LiteLLM translation layer, and uses a
+~10k system prompt against Claude Code's ~29k.
+
+`%USERPROFILE%\.config\opencode\opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "llamacpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama-server (3090)",
+      "options": {
+        "baseURL": "http://llama-vast.tailnet-name.ts.net:10200/v1",
+        "apiKey": "<LLAMA_API_KEY>"
+      },
+      "models": {
+        "qwen-local": {
+          "name": "Qwen3.8 27B Abliterated",
+          "supportsToolCalls": true,
+          "limit": { "context": 125000, "output": 8192 }
+        },
+        "claude-haiku-4-5": {
+          "name": "Qwen (small task model)",
+          "supportsToolCalls": true,
+          "limit": { "context": 125000, "output": 4096 }
+        }
+      }
+    }
+  },
+  "model": "llamacpp/qwen-local"
+}
+```
+
+`baseURL` must sit inside `options` or you get a URL parse error.
+
+The `claude-haiku-4-5` entry is not a mistake. opencode picks a "small model" for title
+generation from a hardcoded list containing that name, so mapping it to the same
+endpoint stops it failing.
+
+For context management, prefer an `AGENTS.md` in the project root over `/compact`.
+opencode reads it at start. `/compact` makes Qwen summarise its own history and it
+loses specifics.
+
+### Claude Code fallback
+
+Claude Code speaks the Anthropic Messages API, so it needs LiteLLM as a translation
+layer: point `openai/qwen-local` at the server, run it on port 4000, then set
+`ANTHROPIC_BASE_URL=http://127.0.0.1:4000`, `ANTHROPIC_AUTH_TOKEN=<litellm master key>`,
+`ANTHROPIC_MODEL=qwen-local`, and `ANTHROPIC_API_KEY=` blank.
+
+Use `127.0.0.1`, not `localhost`. On Windows the IPv6 resolution breaks it.
+
+## What is in the image
+
+The tarball has one top-level `bin/` holding executables and shared objects together.
+There is no separate `lib/`, which is why `PATH` and `LD_LIBRARY_PATH` both point at
+`/opt/llamacpp/bin`.
 
 The build drops the ~45 `test-*` binaries and keeps `llama-server`, `llama-cli`,
-`llama-bench`, `llama-quantize`, `llama-gguf-split`, the mtmd tools and every `.so`.
+`llama-bench`, `llama-perplexity`, `llama-quantize`, `llama-gguf-split`, the mtmd tools
+and every `.so`. `llama-bench` and `llama-perplexity` are asserted present at build
+time, since they are needed for the base versus abliterated benchmark.
 
-`libggml-cuda.so` links `libcublas.so.12` and `libcudart.so.12`. The Dockerfile checks
-for them and installs the CUDA 12.6 runtime libs **only if the base image lacks them**,
-which avoids adding ~700 MB for nothing. A build-time `ldd` check fails the build on any
-unresolved library, so a missing dependency surfaces in CI rather than on a rented box.
-`libcuda.so.1` is expected to be missing at build time — it comes from the host driver.
+`libggml-cuda.so` links `libcublas.so.12` and `libcudart.so.12`. The Dockerfile
+installs the CUDA 12.6 runtime libraries only if the base image lacks them, avoiding
+~700 MB for nothing, then an `ldd` gate fails the build on any unresolved library so a
+missing dependency surfaces in CI instead of on a rented box. `libcuda.so.1` is
+expected to be absent at build time. It comes from the host driver.
 
-No `ENTRYPOINT` or `CMD` is set, deliberately: overriding either breaks Vast's SSH,
-Jupyter and portal, which are started by the base image's own entrypoint.
+Tailscale is installed from version-pinned, checksum-verified static binaries rather
+than piping `install.sh` into a shell.
+
+No `ENTRYPOINT` or `CMD` is set. The shipped image inherits Vast's own
+`/opt/instance-tools/bin/entrypoint.sh`, which is what starts SSH, Jupyter and the
+portal. Overriding either would kill all three and leave no way in.
+
+## Outstanding
+
+- Benchmark base against abliterated (GSM8K, IFEval, EvalPlus via lm-eval-harness) to
+  measure what the refusal ablation actually cost. Expect the damage on
+  instruction-following and reasoning.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
+| Symptom | Cause and fix |
 |---|---|
-| `LLAMA_API_KEY is not set` | Add it to the template's environment variables, or `export LLAMA_API_KEY=...` before running. |
-| `bad interpreter: ...^M` | `start-llama.sh` got CRLF endings. `.gitattributes` prevents it and the Dockerfile strips them; if you edited the file outside git, re-save it as LF. |
-| `error while loading shared libraries: libcublas.so.12` | Base image changed and lost cuBLAS. Rerun the build — the Dockerfile's check will install it. |
-| `no .gguf matching 'Q4_K_M' found` | Repo renamed or reshared its files. List them at `https://huggingface.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF/tree/main` and set `MODEL_FILE=<exact-name.gguf>`. |
-| Several matches, none of them shards | Ambiguous quant string; the script stops instead of guessing. Set `MODEL_FILE`. |
-| Connection refused from outside | `-p 10200:10200` missing from the template's Docker options, or you used the internal port instead of the external one Vast maps. |
-| Out of VRAM at load | 27B Q4_K_M plus 128k of q8_0 KV is tight on 24 GB. Lower `LLAMA_CTX` (e.g. `65536`). |
-| Actions fails with "no space left on device" | The disk-cleanup step was removed or the base image grew. Re-add it, or build on a larger runner. |
-| Download died partway | Just rerun `start-llama.sh` — it resumes from the byte it stopped at. |
-| Registered as `llama-vast-1` | A stale node still holds the name. Use an ephemeral key, destroy old instances, delete the stale node in the admin console. See section 6. |
-| `'tailscale up' failed` | Expired key, a single-use key being reused, or tailnet ACLs blocking the node. Check `/workspace/logs/tailscaled.log`. |
-| Tailscale skipped entirely | `TS_AUTHKEY` isn't set on the template. The script logs this and carries on using Vast's mapped port. |
-| Tailnet name won't resolve | MagicDNS off on the tailnet, or client not connected. Use the `100.x.y.z` address the script prints. |
+| `LLAMA_API_KEY is not set` | Add it to the template env vars, or export it before running. |
+| `bad interpreter: ...^M` | CRLF line endings on the script. `.gitattributes` prevents it and the Dockerfile strips them. Re-save as LF if edited outside git. |
+| `libcublas.so.12` not found | Base image changed and lost cuBLAS. Rerun the build, the check installs it. |
+| `no .gguf matching 'Q4_K_M'` | Repo renamed or resharded. List files at the repo tree and set `MODEL_FILE=<exact-name.gguf>`. |
+| Several matches, none sharded | Ambiguous quant string. The script stops instead of guessing. Set `MODEL_FILE`. |
+| `failed to find a memory slot` | `--parallel` above 1. Slots are sharing the context pool. |
+| Connection refused from outside | `-p 10200:10200` missing from Docker options, or the internal port used instead of the mapped external one. |
+| Out of VRAM at load | Do not just lower the context. See "If it runs out of VRAM" above. |
+| Registered as `llama-vast-1` | A stale node holds the name. Ephemeral key, destroy old instances, delete the stale node. |
+| `'tailscale up' failed` | Expired key, single-use key reused, or ACLs. Check `/workspace/logs/tailscaled.log`. |
+| Tailscale skipped entirely | `TS_AUTHKEY` not set. The script logs it and falls back to Vast's mapped port. |
+| Tailnet name will not resolve | MagicDNS off, or client not connected. Use the `100.x.y.z` address. |
+| Actions fails, `repository name must be lowercase` | `DOCKERHUB_USERNAME` has capitals. |
+| Actions fails at `docker login` | Wrong username case, or the token was deleted before the secret was updated. |
+| Actions fails, no space left | The disk cleanup step was removed, or the base image grew. |
+| Download died partway | Rerun `start-llama.sh`. It resumes from where it stopped. |
