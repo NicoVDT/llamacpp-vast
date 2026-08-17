@@ -226,7 +226,7 @@ proxy sits on `localhost:1055` for reaching other tailnet nodes from inside.
 
 ```
 llama-server -m <model.gguf> --host 0.0.0.0 --port 10200 -ngl 99 \
-  --flash-attn on --jinja -c 131072 --cache-type-k q8_0 --cache-type-v q8_0 \
+  --flash-attn on --jinja -c 155000 --cache-type-k q8_0 --cache-type-v q8_0 \
   --parallel 1 --alias qwen-local --api-key <LLAMA_API_KEY>
 ```
 
@@ -238,8 +238,12 @@ in size.
 context pool. A single 29k token agentic turn starves the others and triggers KV cache
 retry cascades (`failed to find a memory slot`). One slot gets the whole context.
 
-**`-c 131072`** fits. Measured at roughly 20.7 GB of 24.5 GB with q8_0 KV, on a real
-3090, not calculated. KV costs about 39 MB per 1k tokens.
+**`-c 155000`** fits. The model's trained context is 262144 (from the GGUF
+`context_length`), so the limit here is VRAM, not the model. KV costs about 39 MB per
+1k tokens, measured. 131072 was measured at ~20.7 GB of 24.5 GB, which puts the non-KV
+base (weights plus compute buffers) at ~15.6 GB, so 155000 lands around 21.6 GB. The
+practical single-3090 ceiling is roughly 165 to 170k before VRAM runs out, well short
+of the model's 256k.
 
 **`--alias qwen-local`** gives a clean model id instead of the full file path.
 
@@ -255,11 +259,12 @@ Generation slows as context fills. That is expected.
 
 ### If it runs out of VRAM
 
-Do not reflexively drop `LLAMA_CTX` to 65536. 131072 is verified to fit. An OOM means
-something differs from the known-good manual build, so find that first. Check that
-flash attention actually enabled (without it the KV cache is F16 and roughly doubles),
-that both `--cache-type-k` and `--cache-type-v` are `q8_0`, and that nothing else is
-holding VRAM (`nvidia-smi`).
+155000 is expected to fit at around 21.6 GB of 24.5. If it OOMs at load, the first
+suspects are configuration, not the context number. Check that flash attention actually
+enabled (without it the KV cache is F16 and roughly doubles), that both
+`--cache-type-k` and `--cache-type-v` are `q8_0`, and that nothing else is holding VRAM
+(`nvidia-smi`). Only after ruling those out, lower `LLAMA_CTX`: each 10k tokens is about
+390 MB. The model itself is not the limit until well past 165k.
 
 ## Client setup
 
