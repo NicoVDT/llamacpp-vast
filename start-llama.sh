@@ -68,6 +68,34 @@ case ":${LD_LIBRARY_PATH:-}:" in
 esac
 export PATH LD_LIBRARY_PATH
 
+# Same problem as PATH, one layer down. Vast passes template variables to
+# `docker run`, but sshd builds a fresh session and inherits none of them, so an
+# interactive shell sees no LLAMA_API_KEY even though the container has one.
+# PID 1 is the container entrypoint, so its environment is authoritative for what
+# was actually passed in. /etc/environment is the fallback. Specific names are
+# read rather than sourcing either wholesale, since both also define PATH and
+# would undo the block above.
+proc1_value() {
+    [ -r /proc/1/environ ] || return 0
+    tr '\0' '\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | tail -n1
+}
+envfile_value() {
+    [ -r /etc/environment ] || return 0
+    sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" /etc/environment \
+        | tail -n1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+for _v in LLAMA_API_KEY TS_AUTHKEY HF_TOKEN; do
+    [ -n "${!_v:-}" ] && continue
+    _val="$(proc1_value "$_v")"
+    [ -n "$_val" ] || _val="$(envfile_value "$_v")"
+    if [ -n "$_val" ]; then
+        printf -v "$_v" '%s' "$_val"
+        export "${_v?}"
+        log "recovered $_v from the container environment"
+    fi
+done
+unset _v _val
+
 # --- preflight -------------------------------------------------------------
 
 if [ "$MODE" != "download" ] && [ -z "${LLAMA_API_KEY:-}" ]; then

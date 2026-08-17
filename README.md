@@ -350,7 +350,8 @@ portal. Overriding either would kill all three and leave no way in.
 
 | Symptom | Cause and fix |
 |---|---|
-| `LLAMA_API_KEY is not set` | Add it to the template env vars, or export it before running. |
+| `LLAMA_API_KEY is not set` | The script recovers it from `/proc/1/environ`, falling back to `/etc/environment`, because sshd does not inherit the container's environment. If this still fires, the variable genuinely is not set: check the template's CLI preview actually contains `-e LLAMA_API_KEY=...`. |
+| `start-llama.sh: command not found` | Docker `ENV` does not reach SSH login shells. The image writes the paths to `/etc/profile.d/llamacpp.sh` and `/root/.bashrc`, and the script repairs `PATH` itself. If it still fires, run it as `/usr/local/bin/start-llama.sh` and tell me, because that means neither file is being read. |
 | `bad interpreter: ...^M` | CRLF line endings on the script. `.gitattributes` prevents it and the Dockerfile strips them. Re-save as LF if edited outside git. |
 | `libcublas.so.12` not found | Base image changed and lost cuBLAS. Rerun the build, the check installs it. |
 | `no .gguf matching 'Q4_K_M'` | Repo renamed or resharded. List files at the repo tree and set `MODEL_FILE=<exact-name.gguf>`. |
