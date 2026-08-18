@@ -9,8 +9,8 @@
 #
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF}"
-MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
+MODEL_REPO="${MODEL_REPO:-orcarouter/Qwen3.8-27B-Uncensored-GGUF}"
+MODEL_QUANT="${MODEL_QUANT:-Q5_K_M}"
 MODEL_DIR="${MODEL_DIR:-/workspace/models}"
 MODEL_FILE="${MODEL_FILE:-}"          # pin an exact filename to skip auto-discovery
 MODEL_PATH="${MODEL_PATH:-}"          # or point straight at a local .gguf
@@ -20,12 +20,19 @@ HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
 LLAMA_HOST="${LLAMA_HOST:-0.0.0.0}"
 LLAMA_PORT="${LLAMA_PORT:-10200}"
 LLAMA_NGL="${LLAMA_NGL:-99}"
-LLAMA_CTX="${LLAMA_CTX:-155000}"
+LLAMA_CTX="${LLAMA_CTX:-130000}"
 LLAMA_PARALLEL="${LLAMA_PARALLEL:-1}"
 LLAMA_ALIAS="${LLAMA_ALIAS:-qwen-local}"
 LLAMA_CACHE_TYPE_K="${LLAMA_CACHE_TYPE_K:-q8_0}"
 LLAMA_CACHE_TYPE_V="${LLAMA_CACHE_TYPE_V:-q8_0}"
 LLAMA_EXTRA_ARGS="${LLAMA_EXTRA_ARGS:-}"
+
+# MTP speculative decoding. This model bakes a nextn/MTP head into every quant,
+# so llama-server can draft tokens with it and verify in one pass, which speeds
+# generation with no separate draft model. Set LLAMA_SPEC_TYPE empty to disable,
+# e.g. if you point MODEL_REPO at a model without an MTP head.
+LLAMA_SPEC_TYPE="${LLAMA_SPEC_TYPE:-draft-mtp}"
+LLAMA_SPEC_DRAFT_N_MAX="${LLAMA_SPEC_DRAFT_N_MAX:-2}"
 
 TMUX_SESSION="${TMUX_SESSION:-llama}"
 LOG_DIR="${LOG_DIR:-/workspace/logs}"
@@ -335,6 +342,28 @@ else
         log "matched ${#files[@]} file(s): ${files[*]}"
     fi
 
+    # This model's repo is gated (accept the terms once at
+    # ${HF_ENDPOINT}/${MODEL_REPO}, then the account gets access). Discovery uses
+    # the public API and works without a token, but the file download does not.
+    # Probe access up front so a gated repo fails here with a clear message rather
+    # than as a bare 401 partway through a multi-GB download.
+    if [ -z "${_SKIP_GATE_CHECK:-}" ]; then
+        _probe_url="${HF_ENDPOINT}/${MODEL_REPO}/resolve/${MODEL_REVISION}/${files[0]}?download=true"
+        _code="$(curl_hf -fsIL -o /dev/null -w '%{http_code}' --retry 2 --max-time 30 "$_probe_url" 2>/dev/null || true)"
+        if [ "$_code" = "401" ] || [ "$_code" = "403" ]; then
+            if [ -n "${HF_TOKEN:-}" ]; then
+                die "Hugging Face returned $_code for ${MODEL_REPO} even with HF_TOKEN set.
+       The token is valid but this account has not been granted access. Open
+       ${HF_ENDPOINT}/${MODEL_REPO} while logged in and accept the conditions,
+       then rerun."
+            fi
+            die "${MODEL_REPO} is gated and no HF_TOKEN is set (HTTP $_code).
+       1. Open ${HF_ENDPOINT}/${MODEL_REPO} while logged in and accept the terms.
+       2. Create a token at ${HF_ENDPOINT}/settings/tokens (read scope is enough).
+       3. Put it in the Vast template as HF_TOKEN and rerun."
+        fi
+    fi
+
     for f in "${files[@]}"; do
         download_one "$f"
     done
@@ -356,6 +385,13 @@ fi
 
 # --- launch ----------------------------------------------------------------
 
+# Assemble the MTP speculative-decoding flags, or nothing if disabled.
+LLAMA_SPEC_ARGS=""
+if [ -n "$LLAMA_SPEC_TYPE" ]; then
+    LLAMA_SPEC_ARGS="--spec-type $LLAMA_SPEC_TYPE --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX"
+    log "MTP speculative decoding on: $LLAMA_SPEC_ARGS"
+fi
+
 # The API key is passed through a 0600 env file rather than being interpolated
 # into the tmux command line, which also sidesteps tmux's habit of inheriting
 # the *server's* environment instead of the client's for pre-existing sessions.
@@ -373,7 +409,8 @@ LLAMA_PARALLEL=$LLAMA_PARALLEL
 LLAMA_ALIAS=$LLAMA_ALIAS
 LLAMA_CACHE_TYPE_K=$LLAMA_CACHE_TYPE_K
 LLAMA_CACHE_TYPE_V=$LLAMA_CACHE_TYPE_V
-LLAMA_EXTRA_ARGS=$LLAMA_EXTRA_ARGS
+LLAMA_SPEC_ARGS="$LLAMA_SPEC_ARGS"
+LLAMA_EXTRA_ARGS="$LLAMA_EXTRA_ARGS"
 LLAMA_API_KEY=$LLAMA_API_KEY
 LOG_FILE=$LOG_FILE
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-/opt/llamacpp/bin}
@@ -400,6 +437,7 @@ llama-server \
     --parallel "$LLAMA_PARALLEL" \
     --alias "$LLAMA_ALIAS" \
     --api-key "$LLAMA_API_KEY" \
+    $LLAMA_SPEC_ARGS \
     $LLAMA_EXTRA_ARGS 2>&1 | tee -a "$LOG_FILE"
 status=${PIPESTATUS[0]}
 echo "=== llama-server exited with status $status at $(date -Is) ===" | tee -a "$LOG_FILE"

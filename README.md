@@ -3,8 +3,10 @@
 Prebuilt llama.cpp (CUDA 12.6, `sm_86`) on top of Vast.ai's base image, so renting a
 fresh RTX 3090 means pulling an image instead of a 25 minute recompile.
 
-The ~17 GB GGUF is not in the image. It is pulled from Hugging Face on first run and
-cached under `/workspace/models`.
+The ~19.5 GB GGUF is not in the image. It is pulled from Hugging Face on first run and
+cached under `/workspace/models`. The default model is
+`orcarouter/Qwen3.8-27B-Uncensored-GGUF` Q5_K_M, a `qwen35` hybrid (Gated DeltaNet plus
+full attention) with an MTP speculative-decoding head baked into every quant.
 
 | | |
 |---|---|
@@ -93,18 +95,23 @@ Caddy holds 6006, 1111 and 8384.
 | Variable | Value | Notes |
 |---|---|---|
 | `LLAMA_API_KEY` | your key | Required. The script refuses to start without it. Never baked into the image. |
+| `HF_TOKEN` | your HF token | Required for this model. The default repo is gated, so the download 401s without it. See section 7. |
 | `TS_AUTHKEY` | `tskey-auth-...` | Enables Tailscale. Reusable and ephemeral, see section 6. |
 | `TS_HOSTNAME` | `llama-vast` | Already the default. Set only to change it. |
 | `OPEN_BUTTON_PORT` | `10200` | Optional, points Vast's "Open" button at the server. |
-| `HF_TOKEN` | your HF token | Optional, for gated repos or rate limits. |
 
 Overridable, all with working defaults: `MODEL_REPO`, `MODEL_QUANT`, `MODEL_FILE`,
 `MODEL_PATH`, `MODEL_DIR`, `MODEL_REVISION`, `LLAMA_PORT`, `LLAMA_CTX`, `LLAMA_NGL`,
 `LLAMA_PARALLEL`, `LLAMA_ALIAS`, `LLAMA_CACHE_TYPE_K`, `LLAMA_CACHE_TYPE_V`,
-`LLAMA_EXTRA_ARGS`, `TMUX_SESSION`, `LOG_DIR`, `HF_ENDPOINT`, `VERIFY_SHA256`,
-`TS_STATE_DIR`, `TS_SOCKET`, `TS_SOCKS5_PORT`, `TS_EXTRA_ARGS`.
+`LLAMA_SPEC_TYPE`, `LLAMA_SPEC_DRAFT_N_MAX`, `LLAMA_EXTRA_ARGS`, `TMUX_SESSION`,
+`LOG_DIR`, `HF_ENDPOINT`, `VERIFY_SHA256`, `TS_STATE_DIR`, `TS_SOCKET`,
+`TS_SOCKS5_PORT`, `TS_EXTRA_ARGS`.
 
-**Disk:** at least 40 GB. Image 6.2 GB compressed and larger unpacked, model ~17 GB.
+`LLAMA_SPEC_TYPE` defaults to `draft-mtp`, which turns on MTP speculative decoding using
+the head baked into the model. Set it empty to disable, for instance if you point
+`MODEL_REPO` at a model with no MTP head.
+
+**Disk:** at least 40 GB. Image 6.2 GB compressed and larger unpacked, model ~19.5 GB.
 
 **Reliability:** filter to 96% or above.
 
@@ -132,13 +139,17 @@ is no `/opt/start-llama.sh`.
 That will:
 
 0. Bring the node up on the tailnet as `llama-vast`, if `TS_AUTHKEY` is set. This runs
-   before the download on purpose, so the box is reachable while 17 GB pulls.
-1. Resolve the `Q4_K_M` GGUF in `Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF` through
-   the Hugging Face API. Handles sharded files, resumes partial downloads, skips the
+   before the download on purpose, so the box is reachable while ~19.5 GB pulls.
+1. Check gated-repo access up front, so a missing or unapproved `HF_TOKEN` fails with a
+   clear message instead of a bare 401 partway through the download.
+2. Resolve the `Q5_K_M` GGUF in `orcarouter/Qwen3.8-27B-Uncensored-GGUF` through the
+   Hugging Face API. Handles sharded files, resumes partial downloads, skips the
    download when the file is already complete. Today that resolves to a single file,
-   `Qwen3.8-27B-ABLITERATED-Q4_K_M.gguf`, 16,810,716,384 bytes.
-2. Launch `llama-server` in a detached tmux session named `llama`.
-3. Wait for `/health`, then print the local URL, the tailnet URL and the exact
+   `Qwen3.8-27B-Uncensored-Q5_K_M.gguf`, ~19.5 GB. The mmproj vision projector is
+   filtered out; this is a text-only coding setup.
+3. Launch `llama-server` in a detached tmux session named `llama`, with MTP
+   speculative decoding on.
+4. Wait for `/health`, then print the local URL, the tailnet URL and the exact
    `opencode.json` baseURL.
 
 Options:
@@ -220,14 +231,34 @@ tail -f /workspace/logs/tailscaled.log
 listeners, which is all this needs, since `llama-server` binds `0.0.0.0`. A SOCKS5
 proxy sits on `localhost:1055` for reaching other tailnet nodes from inside.
 
+## 7. Model access (Hugging Face gating)
+
+The default model, `orcarouter/Qwen3.8-27B-Uncensored-GGUF`, is a gated repo. File
+listing works without a token (which is how discovery finds the file), but the actual
+download does not, so `HF_TOKEN` is required. `start-llama.sh` probes access before
+downloading and stops with a clear message if it is missing, rather than dying with a
+bare 401 partway through ~19.5 GB.
+
+One-time setup:
+
+1. Open [the model page](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF)
+   while logged in and accept the conditions. Access is auto-granted, so this is instant.
+2. Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+   Read scope is enough.
+3. Add it to the Vast template as `HF_TOKEN`, alongside `LLAMA_API_KEY` and `TS_AUTHKEY`.
+
+Accepting the terms and creating the token are both browser steps and cannot be
+automated. The token then works for every future rental.
+
 ---
 
 ## Server command and why each flag is there
 
 ```
 llama-server -m <model.gguf> --host 0.0.0.0 --port 10200 -ngl 99 \
-  --flash-attn on --jinja -c 155000 --cache-type-k q8_0 --cache-type-v q8_0 \
-  --parallel 1 --alias qwen-local --api-key <LLAMA_API_KEY>
+  --flash-attn on --jinja -c 130000 --cache-type-k q8_0 --cache-type-v q8_0 \
+  --parallel 1 --alias qwen-local --api-key <LLAMA_API_KEY> \
+  --spec-type draft-mtp --spec-draft-n-max 2
 ```
 
 **`--flash-attn on`** takes a value now, not a bare flag. Flash attention must be on
@@ -238,33 +269,49 @@ in size.
 context pool. A single 29k token agentic turn starves the others and triggers KV cache
 retry cascades (`failed to find a memory slot`). One slot gets the whole context.
 
-**`-c 155000`** fits. The model's trained context is 262144 (from the GGUF
-`context_length`), so the limit here is VRAM, not the model. KV costs about 39 MB per
-1k tokens, measured. 131072 was measured at ~20.7 GB of 24.5 GB, which puts the non-KV
-base (weights plus compute buffers) at ~15.6 GB, so 155000 lands around 21.6 GB. The
-practical single-3090 ceiling is roughly 165 to 170k before VRAM runs out, well short
-of the model's 256k.
+**`--spec-type draft-mtp --spec-draft-n-max 2`** turns on MTP speculative decoding. This
+model bakes a `nextn`/MTP head into every quant, so llama-server drafts up to 2 tokens
+with that head and verifies them in a single forward pass, no separate draft model
+needed. Confirm it is active in the load log: the model reports as 65 blocks (`n_layer`
+64, `n_layer_all` 65). Disable with `LLAMA_SPEC_TYPE=` (empty).
+
+**`-c 130000`** is a VRAM tradeoff, not a model limit. The model's trained context is
+262144 (GGUF `context_length`). The constraint is the 24 GB card. Q5_K_M weights are
+~19.5 GB, and this `qwen35` hybrid keeps only 16 of 64 layers as full-attention KV
+(the rest are recurrent Gated DeltaNet), so KV is small: the Q4 build measured ~20.7 GB
+total at 131072, meaning ~3.9 GB of KV plus overhead. On Q5 that puts 130000 near
+~23.4 GB of 24.5, which is close to the edge. If it OOMs at load, drop to 110000
+(~22.8 GB). Q4_K_M, if you ever switch to it, comfortably holds 155000.
 
 **`--alias qwen-local`** gives a clean model id instead of the full file path.
 
+The model's recommended sampling is `--temp 1.0 --top-p 0.95 --top-k 20`. opencode sets
+sampling per request, so it is left to the client rather than forced server-side. To
+pin it on the server anyway, add it via `LLAMA_EXTRA_ARGS`.
+
 ### Measured performance
+
+These numbers are from the previous model (Blackfrost Q4_K_M, no MTP) and are kept as a
+rough baseline. The current model is Q5_K_M with MTP speculative decoding, so generation
+should be faster on acceptance-friendly output and needs re-measuring on a real box.
 
 | | |
 |---|---|
-| Generation, fresh context | ~41 tok/s |
-| Generation at 84k context | ~28 tok/s |
+| Generation, fresh context | ~41 tok/s (Q4, no MTP) |
+| Generation at 84k context | ~28 tok/s (Q4, no MTP) |
 | Prompt processing | ~1100 to 1360 tok/s |
 
 Generation slows as context fills. That is expected.
 
 ### If it runs out of VRAM
 
-155000 is expected to fit at around 21.6 GB of 24.5. If it OOMs at load, the first
-suspects are configuration, not the context number. Check that flash attention actually
-enabled (without it the KV cache is F16 and roughly doubles), that both
-`--cache-type-k` and `--cache-type-v` are `q8_0`, and that nothing else is holding VRAM
-(`nvidia-smi`). Only after ruling those out, lower `LLAMA_CTX`: each 10k tokens is about
-390 MB. The model itself is not the limit until well past 165k.
+130000 on Q5_K_M is near the edge, around ~23.4 GB of 24.5, so an OOM at load is a real
+possibility here and the first fix is simply to lower `LLAMA_CTX` to 110000 (~22.8 GB).
+Before assuming the number is too high, rule out configuration: flash attention must be
+on (without it the KV cache is F16 and roughly doubles), both `--cache-type-k` and
+`--cache-type-v` must be `q8_0`, and nothing else should be holding VRAM (`nvidia-smi`).
+Each 10k of context is roughly 300 to 390 MB of KV. To reclaim the most room, switch to
+`MODEL_QUANT=Q4_K_M`, which frees ~2.7 GB of weights and comfortably holds 155000.
 
 ## Client setup
 
@@ -286,14 +333,14 @@ opencode talks to llama-server directly, with no LiteLLM translation layer, and 
       },
       "models": {
         "qwen-local": {
-          "name": "Qwen3.8 27B Abliterated",
+          "name": "Qwen3.8 27B Uncensored",
           "supportsToolCalls": true,
-          "limit": { "context": 125000, "output": 8192 }
+          "limit": { "context": 130000, "output": 8192 }
         },
         "claude-haiku-4-5": {
           "name": "Qwen (small task model)",
           "supportsToolCalls": true,
-          "limit": { "context": 125000, "output": 4096 }
+          "limit": { "context": 130000, "output": 4096 }
         }
       }
     }
@@ -330,7 +377,7 @@ There is no separate `lib/`, which is why `PATH` and `LD_LIBRARY_PATH` both poin
 The build drops the ~45 `test-*` binaries and keeps `llama-server`, `llama-cli`,
 `llama-bench`, `llama-perplexity`, `llama-quantize`, `llama-gguf-split`, the mtmd tools
 and every `.so`. `llama-bench` and `llama-perplexity` are asserted present at build
-time, since they are needed for the base versus abliterated benchmark.
+time, since they are needed for benchmarking quants and quality.
 
 `libggml-cuda.so` links `libcublas.so.12` and `libcudart.so.12`. The Dockerfile
 installs the CUDA 12.6 runtime libraries only if the base image lacks them, avoiding
@@ -347,9 +394,10 @@ portal. Overriding either would kill all three and leave no way in.
 
 ## Outstanding
 
-- Benchmark base against abliterated (GSM8K, IFEval, EvalPlus via lm-eval-harness) to
-  measure what the refusal ablation actually cost. Expect the damage on
-  instruction-following and reasoning.
+- Confirm 130000 context actually loads on Q5_K_M without OOM. It is estimated near
+  ~23.4 GB of 24.5. If it fails, drop `LLAMA_CTX` to 110000.
+- Verify MTP is active in the load log (`n_layer_all` 65) and re-measure generation
+  speed against the old Q4 no-MTP baseline.
 
 ## Troubleshooting
 
@@ -359,7 +407,10 @@ portal. Overriding either would kill all three and leave no way in.
 | `start-llama.sh: command not found` | Docker `ENV` does not reach SSH login shells. The image writes the paths to `/etc/profile.d/llamacpp.sh` and `/root/.bashrc`, and the script repairs `PATH` itself. If it still fires, run it as `/usr/local/bin/start-llama.sh` and tell me, because that means neither file is being read. |
 | `bad interpreter: ...^M` | CRLF line endings on the script. `.gitattributes` prevents it and the Dockerfile strips them. Re-save as LF if edited outside git. |
 | `libcublas.so.12` not found | Base image changed and lost cuBLAS. Rerun the build, the check installs it. |
-| `no .gguf matching 'Q4_K_M'` | Repo renamed or resharded. List files at the repo tree and set `MODEL_FILE=<exact-name.gguf>`. |
+| `no .gguf matching 'Q5_K_M'` | Repo renamed or resharded. List files at the repo tree and set `MODEL_FILE=<exact-name.gguf>`. |
+| `is gated and no HF_TOKEN is set` | The default model repo is gated. Accept the terms at the repo page while logged in, create a read token, set it as `HF_TOKEN`. See section 7. |
+| `returned 401 ... even with HF_TOKEN` | Token is valid but the account was never granted access. Open the repo page while logged in and accept the conditions. |
+| `unknown argument: --spec-type` | The binaries predate MTP support. These do not, but if you swapped them, disable with `LLAMA_SPEC_TYPE=`. |
 | Several matches, none sharded | Ambiguous quant string. The script stops instead of guessing. Set `MODEL_FILE`. |
 | `failed to find a memory slot` | `--parallel` above 1. Slots are sharing the context pool. |
 | Connection refused from outside | `-p 10200:10200` missing from Docker options, or the internal port used instead of the mapped external one. |

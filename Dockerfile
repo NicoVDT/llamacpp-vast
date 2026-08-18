@@ -18,18 +18,20 @@ ENV LLAMA_HOME=/opt/llamacpp \
 # Runtime defaults. Everything here can be overridden from the Vast template's
 # environment variables. LLAMA_API_KEY is intentionally absent -- it has no
 # default and start-llama.sh refuses to run without it.
-ENV MODEL_REPO=Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF \
-    MODEL_QUANT=Q4_K_M \
+ENV MODEL_REPO=orcarouter/Qwen3.8-27B-Uncensored-GGUF \
+    MODEL_QUANT=Q5_K_M \
     MODEL_DIR=/workspace/models \
     LOG_DIR=/workspace/logs \
     LLAMA_HOST=0.0.0.0 \
     LLAMA_PORT=10200 \
     LLAMA_NGL=99 \
-    LLAMA_CTX=155000 \
+    LLAMA_CTX=130000 \
     LLAMA_PARALLEL=1 \
     LLAMA_ALIAS=qwen-local \
     LLAMA_CACHE_TYPE_K=q8_0 \
     LLAMA_CACHE_TYPE_V=q8_0 \
+    LLAMA_SPEC_TYPE=draft-mtp \
+    LLAMA_SPEC_DRAFT_N_MAX=2 \
     TMUX_SESSION=llama
 
 # Tailscale gives the box a stable tailnet hostname, so the client baseURL stops
@@ -139,8 +141,8 @@ RUN set -eux; \
         'export LD_LIBRARY_PATH=/opt/llamacpp/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
         >> /root/.bashrc
 
-# The benchmark binaries are needed for the base vs abliterated comparison, and the
-# test-* cull is the kind of thing that quietly takes more than intended. Assert.
+# The benchmark binaries are wanted for quant and quality comparisons, and the test-*
+# cull is the kind of thing that quietly takes more than intended. Assert.
 RUN set -eux; \
     for b in llama-server llama-cli llama-bench llama-perplexity llama-quantize; do \
         test -x "/opt/llamacpp/bin/$b" || { echo "MISSING: $b" >&2; exit 1; }; \
