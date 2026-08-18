@@ -50,6 +50,14 @@ TS_EXTRA_ARGS="${TS_EXTRA_ARGS:-}"
 TS_LOG="$LOG_DIR/tailscaled.log"
 TAILNET_URL=""
 
+# Idle auto-destroy. If IDLE_SHUTDOWN_MINUTES is set (and VAST_API_KEY is
+# available), a watchdog destroys this instance after that many minutes with no
+# requests to the server, so a forgotten box stops billing on its own. Off by
+# default. VAST_API_KEY can manage the whole Vast account, so treat it as
+# sensitive; it is only used to delete this one instance.
+IDLE_SHUTDOWN_MINUTES="${IDLE_SHUTDOWN_MINUTES:-}"
+VAST_API_KEY="${VAST_API_KEY:-}"
+
 MODE="tmux"
 case "${1:-}" in
     --download)   MODE="download" ;;
@@ -91,7 +99,7 @@ envfile_value() {
     sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" /etc/environment \
         | tail -n1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
 }
-for _v in LLAMA_API_KEY TS_AUTHKEY HF_TOKEN; do
+for _v in LLAMA_API_KEY TS_AUTHKEY HF_TOKEN VAST_API_KEY; do
     [ -n "${!_v:-}" ] && continue
     _val="$(proc1_value "$_v")"
     [ -n "$_val" ] || _val="$(envfile_value "$_v")"
@@ -385,6 +393,57 @@ fi
 
 # --- launch ----------------------------------------------------------------
 
+# Idle auto-destroy watchdog. Detects idleness from the server log's modification
+# time: llama-server appends to it on every request, so a log untouched for
+# IDLE_SHUTDOWN_MINUTES means no traffic. Started only after the server is up, so
+# the model download and load are never mistaken for idleness.
+start_idle_watchdog() {
+    [ -n "$IDLE_SHUTDOWN_MINUTES" ] || return 0
+    case "$IDLE_SHUTDOWN_MINUTES" in
+        ''|*[!0-9]*) log "IDLE_SHUTDOWN_MINUTES is not a whole number, watchdog off"; return 0 ;;
+    esac
+    if [ -z "$VAST_API_KEY" ]; then
+        log "IDLE_SHUTDOWN_MINUTES set but VAST_API_KEY missing, watchdog off (cannot self-destroy)"
+        return 0
+    fi
+
+    local wenv="$RUN_DIR/watchdog.env"
+    umask 077
+    cat > "$wenv" <<EOF
+VAST_API_KEY=$VAST_API_KEY
+IDLE_SHUTDOWN_MINUTES=$IDLE_SHUTDOWN_MINUTES
+LOG_FILE=$LOG_FILE
+WLOG=$LOG_DIR/idle-watchdog.log
+EOF
+    chmod 600 "$wenv"
+
+    local wsh="$RUN_DIR/idle-watchdog.sh"
+    cat > "$wsh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+. /run/llama/watchdog.env
+# hostname is C.<instance-id> on Vast; that id is what the API destroys.
+id="$(hostname | sed 's/^C\.//')"
+echo "[idle-watchdog] $(date -Is) armed: destroy instance $id after ${IDLE_SHUTDOWN_MINUTES}m with no requests" >> "$WLOG"
+while true; do
+    sleep 120
+    if [ -f "$LOG_FILE" ] && [ -n "$(find "$LOG_FILE" -mmin +"$IDLE_SHUTDOWN_MINUTES" 2>/dev/null)" ]; then
+        echo "[idle-watchdog] $(date -Is) idle ${IDLE_SHUTDOWN_MINUTES}m, destroying instance $id" >> "$WLOG"
+        curl -s -X DELETE "https://console.vast.ai/api/v0/instances/$id/" \
+            -H "Authorization: Bearer $VAST_API_KEY" >> "$WLOG" 2>&1
+        command -v vastai >/dev/null 2>&1 && \
+            vastai destroy instance "$id" --api-key "$VAST_API_KEY" >> "$WLOG" 2>&1
+        sleep 60
+        exit 0
+    fi
+done
+EOF
+    chmod 700 "$wsh"
+    nohup "$wsh" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    log "idle watchdog armed: destroys this instance after $IDLE_SHUTDOWN_MINUTES min with no requests"
+}
+
 # Assemble the MTP speculative-decoding flags, or nothing if disabled.
 LLAMA_SPEC_ARGS=""
 if [ -n "$LLAMA_SPEC_TYPE" ]; then
@@ -463,6 +522,7 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         if [ -n "$TAILNET_URL" ]; then
             log "  opencode.json baseURL: ${TAILNET_URL}/v1"
         fi
+        start_idle_watchdog
         exit 0
     fi
     die "tmux session '$TMUX_SESSION' exists but the server is not answering on
@@ -486,6 +546,7 @@ for i in $(seq 1 180); do
             log "reachable on the tailnet at: ${TAILNET_URL}"
             log "opencode.json baseURL:       ${TAILNET_URL}/v1"
         fi
+        start_idle_watchdog
         exit 0
     fi
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then

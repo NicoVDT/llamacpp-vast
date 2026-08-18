@@ -32,6 +32,7 @@ ENV MODEL_REPO=orcarouter/Qwen3.8-27B-Uncensored-GGUF \
     LLAMA_CACHE_TYPE_V=q8_0 \
     LLAMA_SPEC_TYPE=draft-mtp \
     LLAMA_SPEC_DRAFT_N_MAX=2 \
+    IDLE_SHUTDOWN_MINUTES= \
     TMUX_SESSION=llama
 
 # Tailscale gives the box a stable tailnet hostname, so the client baseURL stops
